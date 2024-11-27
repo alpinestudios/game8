@@ -1,4 +1,4 @@
-
+.build/**
 game.exe
 *.pdb
 *.rdbg
