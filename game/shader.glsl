@@ -44,7 +44,7 @@ void main() {
     col_out = color;
     
     int tex_id = int(bytes.x * 255.0);
-    if (tex_id > 0) {
+    if (tex_id == 1) {
         col_out = tex_col;
         col_out *= color;
         //col_out += vec4(0.4,0,0,0.3);

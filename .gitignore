@@ -10,3 +10,5 @@ game/shader.glsl_wgsl_fs.glsl
 game/shader.glsl_wgsl_fs.spv
 game/shader.glsl_wgsl_vs.glsl
 game/shader.glsl_wgsl_vs.spv
+atlas.png
+game/shader.odin

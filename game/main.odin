@@ -76,9 +76,9 @@ init :: proc "c" () {
 	
 	// image stuff
 	state.bind.samplers[SMP_default_sampler] = sg.make_sampler({})
-
-	// a shader and pipeline object
-	state.pip = sg.make_pipeline({
+	
+	// setup pipeline
+	pipeline_desc : sg.Pipeline_Desc = {
 		shader = sg.make_shader(quad_shader_desc(sg.query_backend())),
 		index_type = .UINT16,
 		layout = {
@@ -88,8 +88,19 @@ init :: proc "c" () {
 				ATTR_quad_uv0 = { format = .FLOAT2 },
 				ATTR_quad_bytes0 = { format = .UBYTE4N },
 			},
-		},
-	})
+		}
+	}
+	blend_state : sg.Blend_State = {
+		enabled = true,
+		src_factor_rgb = .SRC_ALPHA,
+	  dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
+	  op_rgb = .ADD,
+	  src_factor_alpha = .ONE,
+	  dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
+	  op_alpha = .ADD,
+	}
+	pipeline_desc.colors[0] = { blend = blend_state }
+	state.pip = sg.make_pipeline(pipeline_desc)
 
 	// default pass action
 	state.pass_action = {
@@ -107,8 +118,7 @@ frame :: proc "c" () {
 	
 	draw_stuff()
 	
-	// currently doesn't support mutliple textures. Hard coding the player in for now.
-	state.bind.images[IMG_tex0] = images[Image_Id.player].sg_img
+	state.bind.images[IMG_tex0] = atlas.sg_image
 	
 	sg.update_buffer(
 		state.bind.vertex_buffers[0],
