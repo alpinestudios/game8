@@ -16,9 +16,10 @@ main :: () {
 	// build the shader
 	if has_file_changed_since_last_compile("game/shader.glsl") {
 		log("recompiling shader");
-		result := run_command("sokol-shdc -i game/shader.glsl -o game/shader.odin -l hlsl5:wgsl -f sokol_odin", working_directory=wd, arg_quoting=.NEVER_QUOTE);
+		result := run_command("sokol-shdc -i game/shader.glsl -o game/shader.odin -l hlsl5:wgsl -f sokol_odin --save-intermediate-spirv", working_directory=wd, arg_quoting=.NEVER_QUOTE);
 		if result.exit_code != 0 {
 			log_error("build failed, exit: %", result.exit_code);
+			remove_cached_file("game/shader.glsl"); // this needs to get removed because we failed to compile.
 			exit(1);
 		}
 	}
@@ -32,6 +33,11 @@ main :: () {
 
 }
 
+remove_cached_file :: (file_path: string) {
+	hash_name := path_strip_extension((path_filename(file_path)));
+	cached_hash_file_name := tprint(".build/%", hash_name);
+	file_delete(cached_hash_file_name);
+}
 has_file_changed_since_last_compile :: (file_path: string) -> bool {
 
 	hash_name := path_strip_extension((path_filename(file_path)));

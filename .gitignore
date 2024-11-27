@@ -2,3 +2,11 @@
 game.exe
 *.pdb
 *.rdbg
+game/shader.glsl_hlsl5_fs.glsl
+game/shader.glsl_hlsl5_fs.spv
+game/shader.glsl_hlsl5_vs.glsl
+game/shader.glsl_hlsl5_vs.spv
+game/shader.glsl_wgsl_fs.glsl
+game/shader.glsl_wgsl_fs.spv
+game/shader.glsl_wgsl_vs.glsl
+game/shader.glsl_wgsl_vs.spv

@@ -1,6 +1,3 @@
-// todo, make build script for this guy
-// sokol-shdc -i shader.glsl -o shader.odin -l hlsl5:wgsl -f sokol_odin
-
 package main
 
 import "core:fmt"
@@ -25,9 +22,6 @@ window_w :: 1280
 window_h :: 720
 
 main :: proc() {
-	// fmt.println("hello balls\n");
-	init_time = t.now()
-	
 	sapp.run({
 		init_cb = init,
 		frame_cb = frame,
@@ -43,11 +37,16 @@ main :: proc() {
 init :: proc "c" () {
 	using linalg, fmt
 	context = runtime.default_context()
+	
+	init_time = t.now()
 
 	sg.setup({
 		environment = sglue.environment(),
 		logger = { func = slog.func },
+		d3d11_shader_debugging = ODIN_DEBUG,
 	})
+	
+	init_images()
 	
 	// make the vertex buffer
 	state.bind.vertex_buffers[0] = sg.make_buffer({
@@ -74,6 +73,9 @@ init :: proc "c" () {
 		type = .INDEXBUFFER,
 		data = { ptr = &indices, size = size_of(indices) },
 	})
+	
+	// image stuff
+	state.bind.samplers[SMP_default_sampler] = sg.make_sampler({})
 
 	// a shader and pipeline object
 	state.pip = sg.make_pipeline({
@@ -83,6 +85,8 @@ init :: proc "c" () {
 			attrs = {
 				ATTR_quad_position = { format = .FLOAT2 },
 				ATTR_quad_color0 = { format = .FLOAT4 },
+				ATTR_quad_uv0 = { format = .FLOAT2 },
+				ATTR_quad_bytes0 = { format = .UBYTE4N },
 			},
 		},
 	})
@@ -102,6 +106,9 @@ frame :: proc "c" () {
 	memset(&draw_frame, 0, size_of(draw_frame)) // @speed, we probs don't want to reset this whole thing
 	
 	draw_stuff()
+	
+	// currently doesn't support mutliple textures. Hard coding the player in for now.
+	state.bind.images[IMG_tex0] = images[Image_Id.player].sg_img
 	
 	sg.update_buffer(
 		state.bind.vertex_buffers[0],
@@ -126,8 +133,8 @@ draw_stuff :: proc() {
 	draw_frame.projection = matrix_ortho3d_f32(window_w * -0.5, window_w * 0.5, window_h * -0.5, window_h * 0.5, -1, 1)
 	draw_frame.camera_xform = Matrix4(1)
 	
-	alpha :f32= auto_cast math.mod(seconds_since_init(), 1.0)
+	alpha :f32= auto_cast math.mod(seconds_since_init() * 0.1, 1.0)
 	xform := xform_rotate(alpha * 360.0)
-	draw_rect_xform(xform, v2{100, 100})
-	draw_rect_aabb(v2{-100, 100}, v2{50, 50})
+	draw_rect_xform(xform, v2{100, 100}, img_id=.player)
+	draw_rect_aabb(v2{-100, 100}, v2{50, 50}, img_id=.crawler)
 }
