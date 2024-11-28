@@ -47,6 +47,7 @@ init :: proc "c" () {
 	})
 	
 	init_images()
+	init_fonts()
 	
 	// make the vertex buffer
 	state.bind.vertex_buffers[0] = sg.make_buffer({
@@ -147,4 +148,6 @@ draw_stuff :: proc() {
 	xform := xform_rotate(alpha * 360.0)
 	draw_rect_xform(xform, v2{100, 100}, img_id=.player)
 	draw_rect_aabb(v2{-100, 100}, v2{50, 50}, img_id=.crawler)
+	
+	draw_text("sugon")
 }
