@@ -1,11 +1,13 @@
 package main
 
 import "base:runtime"
+import "base:intrinsics"
 import t "core:time"
 import "core:fmt"
 import "core:os"
 import "core:math"
 import "core:math/linalg"
+import "core:math/ease"
 import "core:mem"
 
 import sapp "../sokol/app"
@@ -148,14 +150,18 @@ draw_stuff :: proc() {
 	using linalg
 
 	draw_frame.projection = matrix_ortho3d_f32(window_w * -0.5, window_w * 0.5, window_h * -0.5, window_h * 0.5, -1, 1)
+	
 	draw_frame.camera_xform = Matrix4(1)
+	draw_frame.camera_xform *= xform_scale(2)
 	
-	alpha :f32= auto_cast math.mod(seconds_since_init() * 0.1, 1.0)
+	alpha :f32= auto_cast math.mod(seconds_since_init() * 0.2, 1.0)
 	xform := xform_rotate(alpha * 360.0)
-	draw_rect_xform(xform, v2{100, 100}, img_id=.player)
-	draw_rect_aabb(v2{-100, 100}, v2{50, 50}, img_id=.crawler)
+	xform *= xform_scale(1.0 + 1 * sine_breathe(alpha))
+	draw_sprite(v2{}, .player, pivot=.bottom_center)
 	
-	draw_text("sugon")
+	draw_sprite(v2{-50, 50}, .crawler, xform=xform, pivot=.center_center)
+	
+	draw_text(v2{50, 0}, "sugon", scale=4.0)
 }
 
 //
@@ -197,10 +203,52 @@ xform_scale :: proc(scale: Vector2) -> Matrix4 {
 	return linalg.matrix4_scale(v3{scale.x, scale.y, 1});
 }
 
+Pivot :: enum {
+	bottom_left,
+	bottom_center,
+	bottom_right,
+	center_left,
+	center_center,
+	center_right,
+	top_left,
+	top_center,
+	top_right,
+}
+scale_from_pivot :: proc(pivot: Pivot) -> Vector2 {
+	switch pivot {
+		case .bottom_left: return v2{0.0, 0.0}
+		case .bottom_center: return v2{0.5, 0.0}
+		case .bottom_right: return v2{1.0, 0.0}
+		case .center_left: return v2{0.0, 0.5}
+		case .center_center: return v2{0.5, 0.5}
+		case .center_right: return v2{1.0, 0.5}
+		case .top_center: return v2{0.5, 1.0}
+		case .top_left: return v2{0.0, 1.0}
+		case .top_right: return v2{1.0, 1.0}
+	}
+	return {};
+}
+
+sine_breathe :: proc(p: $T) -> T where intrinsics.type_is_float(T) {
+	return (math.sin((p - .25) * 2.0 * math.PI) / 2.0) + 0.5
+}
+
 //
 // :RENDER STUFF
 //
 // API ordered highest -> lowest level
+
+draw_sprite :: proc(pos: Vector2, img_id: Image_Id, pivot:= Pivot.bottom_left, xform := Matrix4(1)) {
+	image := images[img_id]
+	size := v2{auto_cast image.width, auto_cast image.height}
+	
+	xform0 := Matrix4(1)
+	xform0 *= xform_translate(pos)
+	xform0 *= xform // we slide in here because rotations + scales work nicely at this point
+	xform0 *= xform_translate(size * -scale_from_pivot(pivot))
+	
+	draw_rect_xform(xform0, size, img_id=img_id)
+}
 
 draw_rect_aabb :: proc(
 	pos: Vector2,
@@ -353,6 +401,7 @@ init_images :: proc() {
 		png_data, succ := os.read_entire_file(path)
 		assert(succ)
 		
+		stbi.set_flip_vertically_on_load(1)
 		width, height, channels: i32
 		img_data := stbi.load_from_memory(raw_data(png_data), auto_cast len(png_data), &width, &height, &channels, 4)
 		assert(img_data != nil, "stbi load failed, invalid image?")
@@ -377,6 +426,8 @@ atlas: Atlas
 // We're hardcoded to use just 1 atlas now since I don't think we'll need more
 // It would be easy enough to extend though. Just add in more texture slots in the shader
 pack_images_into_atlas :: proc() {
+
+	// TODO - add a single pixel of padding for each so we avoid the edge oversampling issue
 
 	// 8192 x 8192 is the WGPU recommended max I think
 	atlas.w = 128
@@ -445,7 +496,7 @@ pack_images_into_atlas :: proc() {
 //
 // :FONT
 //
-draw_text :: proc(text: string) {
+draw_text :: proc(pos: Vector2, text: string, scale:= 1.0) {
 	using stbtt
 	
 	x: f32
@@ -473,9 +524,8 @@ draw_text :: proc(text: string) {
 		uv := v4{ q.s0, q.t1,
 		          q.s1, q.t0 }
 		
-		scale := 6.0
-		
 		xform := Matrix4(1)
+		xform *= xform_translate(pos)
 		xform *= xform_scale(v2{auto_cast scale, auto_cast scale})
 		xform *= xform_translate(offset_to_render_at)
 		draw_rect_xform(xform, size, uv=uv, img_id=font.img_id)
