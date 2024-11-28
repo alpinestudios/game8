@@ -161,43 +161,23 @@ init_images :: proc() {
 		}
 		
 		path := tprint(img_dir, img_name, ".png", sep="")
-		img, succ := load_image_from_disk(path)
-		if !succ {
-			log_error("failed to load image:", img_name)
-			continue
-		}
+		png_data, succ := os.read_entire_file(path)
+		assert(succ)
+		
+		width, height, channels: i32
+		img_data := stbi.load_from_memory(raw_data(png_data), auto_cast len(png_data), &width, &height, &channels, 4)
+		assert(img_data != nil, "stbi load failed, invalid image?")
+			
+		img : Image;
+		img.width = width
+		img.height = height
+		img.data = img_data
 		
 		images[id] = img
 	}
 	image_count = highest_id + 1
-
+	
 	pack_images_into_atlas()
-}
-
-load_image_from_disk :: proc(path: string) -> (Image, bool) {
-
-	//loggie(path)
-	//stbi.set_flip_vertically_on_load(1)
-	
-	png_data, succ := os.read_entire_file(path)
-	if !succ {
-		log_error("read file failed")
-		return {}, false
-	}
-	
-	width, height, channels: i32
-	img_data := stbi.load_from_memory(raw_data(png_data), auto_cast len(png_data), &width, &height, &channels, 4)
-	if img_data == nil {
-		log_error("stbi load failed, invalid image?")
-		return {}, false
-	}
-	
-	ret : Image;
-	ret.width = width
-	ret.height = height
-	ret.data = img_data
-	
-	return ret, true
 }
 
 Atlas :: struct {
@@ -274,8 +254,7 @@ pack_images_into_atlas :: proc() {
 }
 
 // kind scuffed...
-// probs need to split texture / sprite
-// and just have the SpriteID & TextureID be interchangable
+// but I'm abusing the Images to store the font atlas by just inserting it at the end with the next id
 store_image :: proc(w: int, h: int, tex_index: u8, sg_img: sg.Image) -> Image_Id {
 
 	img : Image
