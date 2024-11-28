@@ -106,7 +106,7 @@ init :: proc "c" () {
 	// default pass action
 	state.pass_action = {
 		colors = {
-			0 = { load_action = .CLEAR, clear_value = { 0, 0, 0, 1 }},
+			0 = { load_action = .CLEAR, clear_value = { 1, 1, 1, 1 }},
 		},
 	}
 }
@@ -120,6 +120,7 @@ frame :: proc "c" () {
 	draw_stuff()
 	
 	state.bind.images[IMG_tex0] = atlas.sg_image
+	state.bind.images[IMG_tex1] = images[font.img_id].sg_img
 	
 	sg.update_buffer(
 		state.bind.vertex_buffers[0],

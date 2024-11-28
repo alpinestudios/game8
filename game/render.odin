@@ -1,8 +1,15 @@
 package main
 
+import "core:os"
 import "core:fmt"
 import "core:math"
 import "core:math/linalg"
+import "core:mem"
+
+import sg "../sokol/gfx"
+import stbi "vendor:stb/image"
+import stbrp "vendor:stb/rect_pack"
+import stbtt "vendor:stb/truetype"
 
 Vertex :: struct {
 	pos: Vector2,
@@ -88,9 +95,9 @@ draw_rect_projected :: proc(
 		uv0 = images[img_id].atlas_uvs
 	}
 	
-	tex_index :u8= 0
-	if img_id != .nil {
-		tex_index = 1
+	tex_index :u8= images[img_id].tex_index
+	if img_id == .nil {
+		tex_index = 255 // bypasses texture sampling
 	}
 	
 	draw_quad_projected(world_to_clip, {bl, tl, tr, br}, {col, col, col, col}, {uv0.xy, uv0.xw, uv0.zw, uv0.zy}, {tex_index,tex_index,tex_index,tex_index})
@@ -116,4 +123,245 @@ draw_rect_aabb :: proc(
 ) {
 	xform := linalg.matrix4_translate(v3{pos.x, pos.y, 0})
 	draw_rect_xform(xform, size, col, uv, img_id)
+}
+
+
+//
+// :IMAGE STUFF
+//
+
+Image_Id :: enum {
+	nil,	
+	player,
+	crawler,
+}
+
+Image :: struct {
+	width, height: i32,
+	
+	tex_index: u8,
+	sg_img: sg.Image,
+	data: [^]byte,
+	atlas_uvs: Vector4,
+}
+images: [128]Image
+image_count: int
+
+init_images :: proc() {
+	using fmt
+
+	img_dir := "res/images/"
+	
+	highest_id := 0;
+	for img_name, id in Image_Id {
+		if id == 0 { continue }
+		
+		if id > highest_id {
+			highest_id = id
+		}
+		
+		path := tprint(img_dir, img_name, ".png", sep="")
+		img, succ := load_image_from_disk(path)
+		if !succ {
+			log_error("failed to load image:", img_name)
+			continue
+		}
+		
+		images[id] = img
+	}
+	image_count = highest_id + 1
+
+	pack_images_into_atlas()
+}
+
+load_image_from_disk :: proc(path: string) -> (Image, bool) {
+
+	//loggie(path)
+	//stbi.set_flip_vertically_on_load(1)
+	
+	png_data, succ := os.read_entire_file(path)
+	if !succ {
+		log_error("read file failed")
+		return {}, false
+	}
+	
+	width, height, channels: i32
+	img_data := stbi.load_from_memory(raw_data(png_data), auto_cast len(png_data), &width, &height, &channels, 4)
+	if img_data == nil {
+		log_error("stbi load failed, invalid image?")
+		return {}, false
+	}
+	
+	ret : Image;
+	ret.width = width
+	ret.height = height
+	ret.data = img_data
+	
+	return ret, true
+}
+
+Atlas :: struct {
+	w, h: int,
+	sg_image: sg.Image,
+}
+atlas: Atlas
+// We're hardcoded to use just 1 atlas now since I don't think we'll need more
+// It would be easy enough to extend though. Just add in more texture slots in the shader
+pack_images_into_atlas :: proc() {
+
+	// 8192 x 8192 is the WGPU recommended max I think
+	atlas.w = 128
+	atlas.h = 128
+	
+	cont : stbrp.Context
+	nodes : [128]stbrp.Node // #volatile with atlas.w
+	stbrp.init_target(&cont, auto_cast atlas.w, auto_cast atlas.h, &nodes[0], auto_cast atlas.w)
+	
+	rects : [dynamic]stbrp.Rect
+	for img, id in images {
+		if img.width == 0 {
+			continue
+		}
+		append(&rects, stbrp.Rect{ id=auto_cast id, w=auto_cast img.width, h=auto_cast img.height })
+	}
+	
+	succ := stbrp.pack_rects(&cont, &rects[0], auto_cast len(rects))
+	if succ == 0 {
+		assert(false, "failed to pack all the rects, ran out of space?")
+	}
+	
+	// allocate big atlas
+	raw_data, err := mem.alloc(atlas.w * atlas.h * 4)
+	defer mem.free(raw_data)
+	mem.set(raw_data, 255, atlas.w*atlas.h*4)
+	
+	// copy rect row-by-row into destination atlas
+	for rect in rects {
+		img := &images[rect.id]
+		
+		// copy row by row into atlas
+		for row in 0..<rect.h {
+			src_row := mem.ptr_offset(&img.data[0], row * rect.w * 4)
+			dest_row := mem.ptr_offset(cast(^u8)raw_data, ((rect.y + row) * auto_cast atlas.w + rect.x) * 4)
+			mem.copy(dest_row, src_row, auto_cast rect.w * 4)
+		}
+		
+		// yeet old data
+		stbi.image_free(img.data)
+		img.data = nil;
+		
+		// img.atlas_x = auto_cast rect.x
+		// img.atlas_y = auto_cast rect.y
+		
+		img.atlas_uvs.x = cast(f32)rect.x / cast(f32)atlas.w
+		img.atlas_uvs.y = cast(f32)rect.y / cast(f32)atlas.h
+		img.atlas_uvs.z = img.atlas_uvs.x + cast(f32)img.width / cast(f32)atlas.w
+		img.atlas_uvs.w = img.atlas_uvs.y + cast(f32)img.height / cast(f32)atlas.h
+	}
+	
+	stbi.write_png("atlas.png", auto_cast atlas.w, auto_cast atlas.h, 4, raw_data, 4 * auto_cast atlas.w)
+	
+	// setup image for GPU
+	desc : sg.Image_Desc
+	desc.width = auto_cast atlas.w
+	desc.height = auto_cast atlas.h
+	desc.pixel_format = .RGBA8
+	desc.data.subimage[0][0] = {ptr=raw_data, size=auto_cast (atlas.w*atlas.h*4)}
+	atlas.sg_image = sg.make_image(desc)
+	if atlas.sg_image.id == sg.INVALID_ID {
+		log_error("failed to make image")
+	}
+}
+
+// kind scuffed...
+// probs need to split texture / sprite
+// and just have the SpriteID & TextureID be interchangable
+store_image :: proc(w: int, h: int, tex_index: u8, sg_img: sg.Image) -> Image_Id {
+
+	img : Image
+	img.width = auto_cast w
+	img.height = auto_cast h
+	img.tex_index = tex_index
+	img.sg_img = sg_img
+	img.atlas_uvs = DEFAULT_UV
+	
+	id := image_count
+	images[id] = img
+	image_count += 1
+	
+	return auto_cast id
+}
+
+
+
+
+//
+// :FONT
+//
+
+draw_text :: proc(text: string) {
+	using stbtt
+	
+	x: f32
+	y: f32
+	
+	draw_rect_aabb(v2{-300,-300}, v2{300, 300}, img_id=font.img_id)
+
+	for char in text {
+		
+		q: aligned_quad
+		GetBakedQuad(&font.char_data[0], font_bitmap_w, font_bitmap_h, cast(i32)char - 32, &x, &y, &q, false)
+		
+		/*
+		glTexCoord2f(q.s0,q.t0); glVertex2f(q.x0,q.y0);
+		glTexCoord2f(q.s1,q.t0); glVertex2f(q.x1,q.y0);
+		glTexCoord2f(q.s1,q.t1); glVertex2f(q.x1,q.y1);
+		glTexCoord2f(q.s0,q.t1); glVertex2f(q.x0,q.y1);
+		*/
+	}
+
+}
+
+font_bitmap_w :: 256
+font_bitmap_h :: 256
+char_count :: 96
+Font :: struct {
+	char_data: [char_count]stbtt.bakedchar,
+	img_id: Image_Id,
+}
+font: Font
+
+
+init_fonts :: proc() {
+	using stbtt
+	
+	font_height := 15 // for some reason this only bakes properly at 15 ? it's a 16px font dou...
+	path := "res/fonts/alagard.ttf"
+	
+	bitmap, _ := mem.alloc(font_bitmap_w * font_bitmap_h)
+	
+
+	ttf_data, err := os.read_entire_file(path)
+	assert(ttf_data != nil, "failed to read font")
+	
+	ret := BakeFontBitmap(raw_data(ttf_data), 0, auto_cast font_height, auto_cast bitmap, font_bitmap_w, font_bitmap_h, 32, char_count, &font.char_data[0])
+	assert(ret > 0, "not enough space in bitmap")
+	
+	stbi.write_png("font.png", auto_cast font_bitmap_w, auto_cast font_bitmap_h, 1, bitmap, auto_cast font_bitmap_w)
+	
+	desc : sg.Image_Desc
+	desc.width = auto_cast font_bitmap_w
+	desc.height = auto_cast font_bitmap_h
+	desc.pixel_format = .R8
+	desc.data.subimage[0][0] = {ptr=bitmap, size=auto_cast (font_bitmap_w*font_bitmap_h)}
+	sg_img := sg.make_image(desc)
+	if sg_img.id == sg.INVALID_ID {
+		log_error("failed to make image")
+	}
+	
+	
+	id := store_image(font_bitmap_w, font_bitmap_h, 1, sg_img)
+	font.img_id = id
+	
+	
 }
