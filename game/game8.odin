@@ -106,7 +106,7 @@ init :: proc "c" () {
 	// default pass action
 	state.pass_action = {
 		colors = {
-			0 = { load_action = .CLEAR, clear_value = { 1, 1, 1, 1 }},
+			0 = { load_action = .CLEAR, clear_value = { 0, 0, 0, 1 }},
 		},
 	}
 }

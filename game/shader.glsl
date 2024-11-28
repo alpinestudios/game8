@@ -47,7 +47,8 @@ void main() {
 	if (tex_index == 0) {
 		tex_col = texture(sampler2D(tex0, default_sampler), uv);
 	} else if (tex_index == 1) {
-		tex_col = texture(sampler2D(tex1, default_sampler), uv);
+		// this is text, it's only got the single .r channel so we stuff it into the alpha
+		tex_col.a = texture(sampler2D(tex1, default_sampler), uv).r;
 	}
 
 	col_out = tex_col;

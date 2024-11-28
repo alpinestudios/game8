@@ -304,20 +304,38 @@ draw_text :: proc(text: string) {
 	
 	x: f32
 	y: f32
-	
-	draw_rect_aabb(v2{-300,-300}, v2{300, 300}, img_id=font.img_id)
 
 	for char in text {
 		
+		advance_x: f32
+		advance_y: f32
 		q: aligned_quad
-		GetBakedQuad(&font.char_data[0], font_bitmap_w, font_bitmap_h, cast(i32)char - 32, &x, &y, &q, false)
+		GetBakedQuad(&font.char_data[0], font_bitmap_w, font_bitmap_h, cast(i32)char - 32, &advance_x, &advance_y, &q, false)
+		// this is the the data for the aligned_quad we're given, with y+ going down
+		// x0, y0,     s0, t0, // top-left
+		// x1, y1,     s1, t1, // bottom-right
 		
-		/*
-		glTexCoord2f(q.s0,q.t0); glVertex2f(q.x0,q.y0);
-		glTexCoord2f(q.s1,q.t0); glVertex2f(q.x1,q.y0);
-		glTexCoord2f(q.s1,q.t1); glVertex2f(q.x1,q.y1);
-		glTexCoord2f(q.s0,q.t1); glVertex2f(q.x0,q.y1);
-		*/
+		
+		size := v2{ abs(q.x0 - q.x1), abs(q.y0 - q.y1) }
+		
+		bottom_left := v2{ q.x0, -q.y1 }
+		top_right := v2{ q.x1, -q.y0 }
+		assert(bottom_left + size == top_right)
+		
+		offset_to_render_at := v2{x,y} + bottom_left
+		
+		uv := v4{ q.s0, q.t1,
+		          q.s1, q.t0 }
+		
+		scale := 6.0
+		
+		xform := Matrix4(1)
+		xform *= xform_scale(v2{auto_cast scale, auto_cast scale})
+		xform *= xform_translate(offset_to_render_at)
+		draw_rect_xform(xform, size, uv=uv, img_id=font.img_id)
+		
+		x += advance_x
+		y += -advance_y
 	}
 
 }
