@@ -61,7 +61,7 @@ init :: proc "c" () {
 		usage = .DYNAMIC,
 		size = size_of(Quad) * len(draw_frame.quads),
 	})
-
+	
 	// make & fill the index buffer
 	index_buffer_count :: MAX_QUADS*6
 	indices : [index_buffer_count]u16;
@@ -95,6 +95,7 @@ init :: proc "c" () {
 				ATTR_quad_color0 = { format = .FLOAT4 },
 				ATTR_quad_uv0 = { format = .FLOAT2 },
 				ATTR_quad_bytes0 = { format = .UBYTE4N },
+				ATTR_quad_color_override0 = { format = .FLOAT4 }
 			},
 		}
 	}
@@ -238,7 +239,7 @@ sine_breathe :: proc(p: $T) -> T where intrinsics.type_is_float(T) {
 //
 // API ordered highest -> lowest level
 
-draw_sprite :: proc(pos: Vector2, img_id: Image_Id, pivot:= Pivot.bottom_left, xform := Matrix4(1)) {
+draw_sprite :: proc(pos: Vector2, img_id: Image_Id, pivot:= Pivot.bottom_left, xform := Matrix4(1), color_override:= v4{0,0,0,0}) {
 	image := images[img_id]
 	size := v2{auto_cast image.width, auto_cast image.height}
 	
@@ -247,7 +248,7 @@ draw_sprite :: proc(pos: Vector2, img_id: Image_Id, pivot:= Pivot.bottom_left, x
 	xform0 *= xform // we slide in here because rotations + scales work nicely at this point
 	xform0 *= xform_translate(size * -scale_from_pivot(pivot))
 	
-	draw_rect_xform(xform0, size, img_id=img_id)
+	draw_rect_xform(xform0, size, img_id=img_id, color_override=color_override)
 }
 
 draw_rect_aabb :: proc(
@@ -256,9 +257,10 @@ draw_rect_aabb :: proc(
 	col: Vector4=COLOR_WHITE,
 	uv: Vector4=DEFAULT_UV,
 	img_id: Image_Id=.nil,
+	color_override:= v4{0,0,0,0},
 ) {
 	xform := linalg.matrix4_translate(v3{pos.x, pos.y, 0})
-	draw_rect_xform(xform, size, col, uv, img_id)
+	draw_rect_xform(xform, size, col, uv, img_id, color_override)
 }
 
 draw_rect_xform :: proc(
@@ -267,8 +269,9 @@ draw_rect_xform :: proc(
 	col: Vector4=COLOR_WHITE,
 	uv: Vector4=DEFAULT_UV,
 	img_id: Image_Id=.nil,
+	color_override:= v4{0,0,0,0},
 ) {
-	draw_rect_projected(draw_frame.projection * draw_frame.camera_xform * xform, size, col, uv, img_id)
+	draw_rect_projected(draw_frame.projection * draw_frame.camera_xform * xform, size, col, uv, img_id, color_override)
 }
 
 Vertex :: struct {
@@ -277,6 +280,7 @@ Vertex :: struct {
 	uv: Vector2,
 	tex_index: u8,
 	_pad: [3]u8,
+	color_override: Vector4,
 }
 
 Quad :: [4]Vertex;
@@ -303,6 +307,7 @@ draw_rect_projected :: proc(
 	col: Vector4=COLOR_WHITE,
 	uv: Vector4=DEFAULT_UV,
 	img_id: Image_Id=.nil,
+	color_override:= v4{0,0,0,0}
 ) {
 
 	bl := v2{ 0, 0 }
@@ -320,7 +325,7 @@ draw_rect_projected :: proc(
 		tex_index = 255 // bypasses texture sampling
 	}
 	
-	draw_quad_projected(world_to_clip, {bl, tl, tr, br}, {col, col, col, col}, {uv0.xy, uv0.xw, uv0.zw, uv0.zy}, {tex_index,tex_index,tex_index,tex_index})
+	draw_quad_projected(world_to_clip, {bl, tl, tr, br}, {col, col, col, col}, {uv0.xy, uv0.xw, uv0.zw, uv0.zy}, {tex_index,tex_index,tex_index,tex_index}, {color_override,color_override,color_override,color_override})
 
 }
 
@@ -331,7 +336,7 @@ draw_quad_projected :: proc(
 	uvs:             [4]Vector2,
 	tex_indicies:       [4]u8,
 	//flags:           [4]Quad_Flags,
-	//color_overrides: [4]Vector4,
+	color_overrides: [4]Vector4,
 	//hsv:             [4]Vector3
 ) {
 	using linalg
@@ -363,6 +368,11 @@ draw_quad_projected :: proc(
 	verts[1].tex_index = tex_indicies[1]
 	verts[2].tex_index = tex_indicies[2]
 	verts[3].tex_index = tex_indicies[3]
+	
+	verts[0].color_override = color_overrides[0]
+	verts[1].color_override = color_overrides[1]
+	verts[2].color_override = color_overrides[2]
+	verts[3].color_override = color_overrides[3]
 }
 
 //
