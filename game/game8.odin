@@ -19,10 +19,12 @@ import stbi "vendor:stb/image"
 import stbrp "vendor:stb/rect_pack"
 import stbtt "vendor:stb/truetype"
 
-state: struct {
+app_state: struct {
 	pass_action: sg.Pass_Action,
 	pip: sg.Pipeline,
 	bind: sg.Bindings,
+	
+	game: Game_State,
 }
 
 window_w :: 1280
@@ -57,7 +59,7 @@ init :: proc "c" () {
 	init_fonts()
 	
 	// make the vertex buffer
-	state.bind.vertex_buffers[0] = sg.make_buffer({
+	app_state.bind.vertex_buffers[0] = sg.make_buffer({
 		usage = .DYNAMIC,
 		size = size_of(Quad) * len(draw_frame.quads),
 	})
@@ -77,13 +79,13 @@ init :: proc "c" () {
 		indices[i + 5] = auto_cast ((i/6)*4 + 3)
 		i += 6;
 	}
-	state.bind.index_buffer = sg.make_buffer({
+	app_state.bind.index_buffer = sg.make_buffer({
 		type = .INDEXBUFFER,
 		data = { ptr = &indices, size = size_of(indices) },
 	})
 	
 	// image stuff
-	state.bind.samplers[SMP_default_sampler] = sg.make_sampler({})
+	app_state.bind.samplers[SMP_default_sampler] = sg.make_sampler({})
 	
 	// setup pipeline
 	pipeline_desc : sg.Pipeline_Desc = {
@@ -109,34 +111,62 @@ init :: proc "c" () {
 	  op_alpha = .ADD,
 	}
 	pipeline_desc.colors[0] = { blend = blend_state }
-	state.pip = sg.make_pipeline(pipeline_desc)
+	app_state.pip = sg.make_pipeline(pipeline_desc)
 
 	// default pass action
-	state.pass_action = {
+	app_state.pass_action = {
 		colors = {
 			0 = { load_action = .CLEAR, clear_value = { 0, 0, 0, 1 }},
 		},
 	}
 }
 
-frame :: proc "c" () {
-	context = runtime.default_context()
+//
+// :frame
+last_time : t.Time
+accumulator: f64
+sims_per_second :: 1.0 / 30.0
+frame :: proc "c" () {	
+	// this'll run at refresh rate (most likely)
+	// turning vsync off via the swap_interval at runtime isn't supported yet
+	// https://github.com/floooh/sokol/issues/693
+	// but if we need it when shipping, it's trivial to patch it in
+	// For now, don't need to care about this and just force vsync
+	
 	using runtime, linalg
+	context = runtime.default_context()
+	
+	current_time := t.now()
+	frame_time :f64= t.duration_seconds(t.diff(last_time, current_time))
+	last_time = current_time
+	// should we use this manually calculated dt, or the sokol frame_duration that's smoothed?
+	// not sure, will experiment later
+	frame_time = sapp.frame_duration()
+	//loggie(frame_time)
+	
+	// only tick the game state at the rate of sims_per_second
+	// https://gafferongames.com/post/fix_your_timestep/
+	accumulator += frame_time
+	for (accumulator >= sims_per_second) {
+		sim_game_state(&app_state.game, sims_per_second)
+		accumulator -= sims_per_second
+	}
 	
 	memset(&draw_frame, 0, size_of(draw_frame)) // @speed, we probs don't want to reset this whole thing
 	
-	draw_stuff()
+	// todo - resim for each in between frame & discard
+	draw_game_state(app_state.game)
 	
-	state.bind.images[IMG_tex0] = atlas.sg_image
-	state.bind.images[IMG_tex1] = images[font.img_id].sg_img
+	app_state.bind.images[IMG_tex0] = atlas.sg_image
+	app_state.bind.images[IMG_tex1] = images[font.img_id].sg_img
 	
 	sg.update_buffer(
-		state.bind.vertex_buffers[0],
+		app_state.bind.vertex_buffers[0],
 		{ ptr = &draw_frame.quads[0], size = size_of(Quad) * len(draw_frame.quads) }
 	)
-	sg.begin_pass({ action = state.pass_action, swapchain = sglue.swapchain() })
-	sg.apply_pipeline(state.pip)
-	sg.apply_bindings(state.bind)
+	sg.begin_pass({ action = app_state.pass_action, swapchain = sglue.swapchain() })
+	sg.apply_pipeline(app_state.pip)
+	sg.apply_bindings(app_state.bind)
 	sg.draw(0, 6*draw_frame.quad_count, 1)
 	sg.end_pass()
 	sg.commit()
@@ -145,24 +175,6 @@ frame :: proc "c" () {
 cleanup :: proc "c" () {
 	context = runtime.default_context()
 	sg.shutdown()
-}
-
-draw_stuff :: proc() {
-	using linalg
-
-	draw_frame.projection = matrix_ortho3d_f32(window_w * -0.5, window_w * 0.5, window_h * -0.5, window_h * 0.5, -1, 1)
-	
-	draw_frame.camera_xform = Matrix4(1)
-	draw_frame.camera_xform *= xform_scale(2)
-	
-	alpha :f32= auto_cast math.mod(seconds_since_init() * 0.2, 1.0)
-	xform := xform_rotate(alpha * 360.0)
-	xform *= xform_scale(1.0 + 1 * sine_breathe(alpha))
-	draw_sprite(v2{}, .player, pivot=.bottom_center)
-	
-	draw_sprite(v2{-50, 50}, .crawler, xform=xform, pivot=.center_center)
-	
-	draw_text(v2{50, 0}, "sugon", scale=4.0)
 }
 
 //
@@ -233,6 +245,29 @@ scale_from_pivot :: proc(pivot: Pivot) -> Vector2 {
 sine_breathe :: proc(p: $T) -> T where intrinsics.type_is_float(T) {
 	return (math.sin((p - .25) * 2.0 * math.PI) / 2.0) + 0.5
 }
+
+//
+// :DRAW game
+//
+
+draw_game_state :: proc(game: Game_State) {
+	using linalg
+
+	draw_frame.projection = matrix_ortho3d_f32(window_w * -0.5, window_w * 0.5, window_h * -0.5, window_h * 0.5, -1, 1)
+	
+	draw_frame.camera_xform = Matrix4(1)
+	draw_frame.camera_xform *= xform_scale(2)
+	
+	alpha :f32= auto_cast math.mod(seconds_since_init() * 0.2, 1.0)
+	xform := xform_rotate(alpha * 360.0)
+	xform *= xform_scale(1.0 + 1 * sine_breathe(alpha))
+	draw_sprite(v2{}, .player, pivot=.bottom_center)
+	
+	draw_sprite(v2{-50, 50}, .crawler, xform=xform, pivot=.center_center)
+	
+	draw_text(v2{50, 0}, "sugon", scale=4.0)
+}
+
 
 //
 // :RENDER STUFF
@@ -599,4 +634,18 @@ store_image :: proc(w: int, h: int, tex_index: u8, sg_img: sg.Image) -> Image_Id
 	image_count += 1
 	
 	return auto_cast id
+}
+
+//
+// :GAME
+//
+Game_State :: struct {
+	tick_index: u64,
+	entities: [128]Entity,
+}
+
+sim_game_state :: proc(game: ^Game_State, delta_t: f64) {
+	defer game.tick_index += 1
+	
+	
 }

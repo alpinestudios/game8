@@ -1,5 +1,17 @@
 
 
-up next:
 
-font rendering
+what next????
+
+
+
+player (entity stuff)
+input
+physics
+tile
+collision
+wasm target + build proof of concept
+main menu
+inventory
+item block placement
+
