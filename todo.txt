@@ -1,12 +1,15 @@
 
 
+player (entity stuff)
+input
+
 
 what next????
 
+actual player entity render
+get player moving right
 
 
-player (entity stuff)
-input
 physics
 tile
 collision

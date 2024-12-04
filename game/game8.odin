@@ -23,8 +23,9 @@ app_state: struct {
 	pass_action: sg.Pass_Action,
 	pip: sg.Pipeline,
 	bind: sg.Bindings,
-	
+	input_state: Input_State,
 	game: Game_State,
+	message_queue: [dynamic]Message,
 }
 
 window_w :: 1280
@@ -35,6 +36,7 @@ main :: proc() {
 		init_cb = init,
 		frame_cb = frame,
 		cleanup_cb = cleanup,
+		event_cb = event,
 		width = window_w,
 		height = window_h,
 		window_title = "quad",
@@ -104,11 +106,11 @@ init :: proc "c" () {
 	blend_state : sg.Blend_State = {
 		enabled = true,
 		src_factor_rgb = .SRC_ALPHA,
-	  dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
-	  op_rgb = .ADD,
-	  src_factor_alpha = .ONE,
-	  dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
-	  op_alpha = .ADD,
+		dst_factor_rgb = .ONE_MINUS_SRC_ALPHA,
+		op_rgb = .ADD,
+		src_factor_alpha = .ONE,
+		dst_factor_alpha = .ONE_MINUS_SRC_ALPHA,
+		op_alpha = .ADD,
 	}
 	pipeline_desc.colors[0] = { blend = blend_state }
 	app_state.pip = sg.make_pipeline(pipeline_desc)
@@ -148,14 +150,16 @@ frame :: proc "c" () {
 	// https://gafferongames.com/post/fix_your_timestep/
 	accumulator += frame_time
 	for (accumulator >= sims_per_second) {
-		sim_game_state(&app_state.game, sims_per_second)
+		sim_game_state(&app_state.game, sims_per_second, app_state.message_queue[:])
+		clear(&app_state.message_queue)
 		accumulator -= sims_per_second
 	}
 	
 	memset(&draw_frame, 0, size_of(draw_frame)) // @speed, we probs don't want to reset this whole thing
 	
 	// todo - resim for each in between frame & discard
-	draw_game_state(app_state.game)
+	draw_game_state(app_state.game, app_state.input_state, &app_state.message_queue)
+	reset_input_state_for_next_frame(&app_state.input_state)
 	
 	app_state.bind.images[IMG_tex0] = atlas.sg_image
 	app_state.bind.images[IMG_tex1] = images[font.img_id].sg_img
@@ -178,8 +182,210 @@ cleanup :: proc "c" () {
 }
 
 //
-// :UTILS
+// :input
+
+Key_Code :: enum {
+	// copied from sokol_app
+	INVALID = 0,
+	SPACE = 32,
+	APOSTROPHE = 39,
+	COMMA = 44,
+	MINUS = 45,
+	PERIOD = 46,
+	SLASH = 47,
+	_0 = 48,
+	_1 = 49,
+	_2 = 50,
+	_3 = 51,
+	_4 = 52,
+	_5 = 53,
+	_6 = 54,
+	_7 = 55,
+	_8 = 56,
+	_9 = 57,
+	SEMICOLON = 59,
+	EQUAL = 61,
+	A = 65,
+	B = 66,
+	C = 67,
+	D = 68,
+	E = 69,
+	F = 70,
+	G = 71,
+	H = 72,
+	I = 73,
+	J = 74,
+	K = 75,
+	L = 76,
+	M = 77,
+	N = 78,
+	O = 79,
+	P = 80,
+	Q = 81,
+	R = 82,
+	S = 83,
+	T = 84,
+	U = 85,
+	V = 86,
+	W = 87,
+	X = 88,
+	Y = 89,
+	Z = 90,
+	LEFT_BRACKET = 91,
+	BACKSLASH = 92,
+	RIGHT_BRACKET = 93,
+	GRAVE_ACCENT = 96,
+	WORLD_1 = 161,
+	WORLD_2 = 162,
+	ESCAPE = 256,
+	ENTER = 257,
+	TAB = 258,
+	BACKSPACE = 259,
+	INSERT = 260,
+	DELETE = 261,
+	RIGHT = 262,
+	LEFT = 263,
+	DOWN = 264,
+	UP = 265,
+	PAGE_UP = 266,
+	PAGE_DOWN = 267,
+	HOME = 268,
+	END = 269,
+	CAPS_LOCK = 280,
+	SCROLL_LOCK = 281,
+	NUM_LOCK = 282,
+	PRINT_SCREEN = 283,
+	PAUSE = 284,
+	F1 = 290,
+	F2 = 291,
+	F3 = 292,
+	F4 = 293,
+	F5 = 294,
+	F6 = 295,
+	F7 = 296,
+	F8 = 297,
+	F9 = 298,
+	F10 = 299,
+	F11 = 300,
+	F12 = 301,
+	F13 = 302,
+	F14 = 303,
+	F15 = 304,
+	F16 = 305,
+	F17 = 306,
+	F18 = 307,
+	F19 = 308,
+	F20 = 309,
+	F21 = 310,
+	F22 = 311,
+	F23 = 312,
+	F24 = 313,
+	F25 = 314,
+	KP_0 = 320,
+	KP_1 = 321,
+	KP_2 = 322,
+	KP_3 = 323,
+	KP_4 = 324,
+	KP_5 = 325,
+	KP_6 = 326,
+	KP_7 = 327,
+	KP_8 = 328,
+	KP_9 = 329,
+	KP_DECIMAL = 330,
+	KP_DIVIDE = 331,
+	KP_MULTIPLY = 332,
+	KP_SUBTRACT = 333,
+	KP_ADD = 334,
+	KP_ENTER = 335,
+	KP_EQUAL = 336,
+	LEFT_SHIFT = 340,
+	LEFT_CONTROL = 341,
+	LEFT_ALT = 342,
+	LEFT_SUPER = 343,
+	RIGHT_SHIFT = 344,
+	RIGHT_CONTROL = 345,
+	RIGHT_ALT = 346,
+	RIGHT_SUPER = 347,
+	MENU = 348,
+	
+	// randy: adding the mouse buttons on the end here so we can unify the enum and not need to use sapp.Mousebutton
+	LEFT_MOUSE = 400,
+	RIGHT_MOUSE = 401,
+	MIDDLE_MOUSE = 402,
+}
+MAX_KEYCODES :: sapp.MAX_KEYCODES
+map_sokol_mouse_button :: proc "c" (sokol_mouse_button: sapp.Mousebutton) -> Key_Code {
+	#partial switch sokol_mouse_button {
+		case .LEFT: return .LEFT_MOUSE
+		case .RIGHT: return .RIGHT_MOUSE
+		case .MIDDLE: return .MIDDLE_MOUSE
+	}
+	return nil
+}
+
+Input_State_Flags :: enum {
+	down,
+	just_pressed,
+	just_released,
+	repeat,
+}
+
+Input_State :: struct {
+	keys: [MAX_KEYCODES]bit_set[Input_State_Flags],
+}
+
+reset_input_state_for_next_frame :: proc(state: ^Input_State) {
+	for &set in state.keys {
+		set -= {.just_pressed, .just_released, .repeat}
+	}
+}
+
+key_just_pressed :: proc(input_state: Input_State, code: Key_Code) -> bool {
+	return .just_pressed in input_state.keys[code]
+}
+key_down :: proc(input_state: Input_State, code: Key_Code) -> bool {
+	return .down in input_state.keys[code]
+}
+key_just_released :: proc(input_state: Input_State, code: Key_Code) -> bool {
+	return .just_released in input_state.keys[code]
+}
+key_repeat :: proc(input_state: Input_State, code: Key_Code) -> bool {
+	return .repeat in input_state.keys[code]
+}
+
+event :: proc "c" (event: ^sapp.Event) {
+	// see this for example of events: https://floooh.github.io/sokol-html5/events-sapp.html
+	input_state := &app_state.input_state
+	
+	#partial switch event.type {
+		case .MOUSE_UP:
+		if .down in input_state.keys[map_sokol_mouse_button(event.mouse_button)] {
+			input_state.keys[map_sokol_mouse_button(event.mouse_button)] -= { .down }
+			input_state.keys[map_sokol_mouse_button(event.mouse_button)] += { .just_released }
+		}
+		case .MOUSE_DOWN:
+		if !(.down in input_state.keys[map_sokol_mouse_button(event.mouse_button)]) {
+			input_state.keys[map_sokol_mouse_button(event.mouse_button)] += { .down, .just_pressed }
+		}
+	
+		case .KEY_UP:
+		if .down in input_state.keys[event.key_code] {
+			input_state.keys[event.key_code] -= { .down }
+			input_state.keys[event.key_code] += { .just_released }
+		}
+		case .KEY_DOWN:
+		if !event.key_repeat && !(.down in input_state.keys[event.key_code]) {
+			input_state.keys[event.key_code] += { .down, .just_pressed }
+		}
+		if event.key_repeat {
+			input_state.keys[event.key_code] += { .repeat }
+		}
+	}
+}
+
 //
+// :UTILS
+
 DEFAULT_UV :: v4{0, 0, 1, 1}
 Vector2 :: [2]f32
 Vector3 :: [3]f32
@@ -247,10 +453,9 @@ sine_breathe :: proc(p: $T) -> T where intrinsics.type_is_float(T) {
 }
 
 //
-// :DRAW game
-//
+// :DRAW :user
 
-draw_game_state :: proc(game: Game_State) {
+draw_game_state :: proc(game: Game_State, input_state: Input_State, messages_out: ^[dynamic]Message) {
 	using linalg
 
 	draw_frame.projection = matrix_ortho3d_f32(window_w * -0.5, window_w * 0.5, window_h * -0.5, window_h * 0.5, -1, 1)
@@ -266,6 +471,17 @@ draw_game_state :: proc(game: Game_State) {
 	draw_sprite(v2{-50, 50}, .crawler, xform=xform, pivot=.center_center)
 	
 	draw_text(v2{50, 0}, "sugon", scale=4.0)
+	
+	
+	// :input example
+	// we want to do the input here, because we'll need context on things like UI rects that
+	// we draw for clicking buttons n shit
+	
+	if key_down(input_state, auto_cast 'A') {
+		append(messages_out, (Message){ kind=.move_left })
+		loggie("sent move left")
+	}
+	
 }
 
 
@@ -567,7 +783,7 @@ draw_text :: proc(pos: Vector2, text: string, scale:= 1.0) {
 		offset_to_render_at := v2{x,y} + bottom_left
 		
 		uv := v4{ q.s0, q.t1,
-		          q.s1, q.t0 }
+							q.s1, q.t0 }
 		
 		xform := Matrix4(1)
 		xform *= xform_translate(pos)
@@ -638,14 +854,93 @@ store_image :: proc(w: int, h: int, tex_index: u8, sg_img: sg.Image) -> Image_Id
 
 //
 // :GAME
-//
+
 Game_State :: struct {
 	tick_index: u64,
 	entities: [128]Entity,
+	latest_entity_handle: Entity_Handle,
 }
 
-sim_game_state :: proc(game: ^Game_State, delta_t: f64) {
-	defer game.tick_index += 1
+
+Message :: struct {
+	kind: enum {
+		move_left,
+		move_right,
+		jump,
+	},
+	from_entity: Entity_Handle,
+	using variant: struct #raw_union {
+		// move_left: struct { sigma: int },
+		// move_right: struct {
+		// 	ligma: int,
+		// 	ligma2: string
+		// },
+	}
+}
+
+// :sim
+sim_game_state :: proc(gs: ^Game_State, delta_t: f64, messages: []Message) {
+	defer gs.tick_index += 1
 	
+	if gs.tick_index == 0 {
+		e := entity_create(gs)
+		setup_player(e)
+	}
 	
+	for msg in messages {
+		#partial switch msg.kind {
+			case .move_left: loggie("MOVE LEFT")
+			case .move_right:
+		}
+	}
+}
+
+//
+// :ENTITY
+
+Entity_Flags :: enum {
+	allocated,
+	physics
+}
+
+Entity_Kind :: enum {
+	nil,
+	player,
+}
+
+Entity :: struct {
+	id: Entity_Handle,
+	kind: Entity_Kind,
+	flags: bit_set[Entity_Flags],
+}
+
+Entity_Handle :: u64
+
+entity_create :: proc(gs:^Game_State) -> ^Entity {
+	spare_en : ^Entity
+	for &en in gs.entities {
+		if !(.allocated in en.flags) {
+			spare_en = &en
+			break
+		}
+	}
+	
+	if spare_en == nil {
+		log_error("ran out of entities, increase size")
+		return nil
+	} else {
+		spare_en.flags = { .allocated }
+		gs.latest_entity_handle += 1
+		spare_en.id = gs.latest_entity_handle
+		return spare_en
+	}
+}
+
+entity_destroy :: proc(gs:^Game_State, entity: ^Entity) {
+	mem.set(entity, 0, size_of(Entity))
+}
+
+setup_player :: proc(e: ^Entity) {
+	e.kind = .player
+	e.flags |= { .physics }
 }
