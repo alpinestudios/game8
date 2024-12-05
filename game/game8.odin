@@ -136,7 +136,10 @@ init :: proc "c" () {
 // :frame
 last_time : t.Time
 accumulator: f64
-sims_per_second :: 1.0 / 60.0
+sims_per_second :: 1.0 / 30.0
+
+last_sim_time :f64= 0.0
+
 frame :: proc "c" () {	
 	// this'll run at refresh rate (most likely)
 	// turning vsync off via the swap_interval at runtime isn't supported yet
@@ -160,14 +163,24 @@ frame :: proc "c" () {
 	accumulator += frame_time
 	for (accumulator >= sims_per_second) {
 		sim_game_state(&app_state.game, sims_per_second, app_state.message_queue[:])
+		last_sim_time = seconds_since_init()
 		clear(&app_state.message_queue)
 		accumulator -= sims_per_second
 	}
 	
 	memset(&draw_frame, 0, size_of(draw_frame)) // @speed, we probs don't want to reset this whole thing
 	
-	// todo - resim for each in between frame & discard
-	draw_game_state(app_state.game, app_state.input_state, &app_state.message_queue)
+	smooth_rendering := true
+	if smooth_rendering {
+		dt := seconds_since_init()-last_sim_time
+		
+		temp_gs := new_clone(app_state.game)
+		sim_game_state(temp_gs, dt, app_state.message_queue[:])
+	
+		draw_game_state(temp_gs^, app_state.input_state, &app_state.message_queue)
+	} else {
+		draw_game_state(app_state.game, app_state.input_state, &app_state.message_queue)
+	}
 	reset_input_state_for_next_frame(&app_state.input_state)
 	
 	app_state.bind.images[IMG_tex0] = atlas.sg_image
@@ -854,8 +867,18 @@ Message :: struct {
 	}
 }
 
-add_message :: proc(messages: ^[dynamic]Message, kind: Message_Kind, from_entity: Entity_Handle) -> ^Message {
-	index := append(messages, (Message){ kind=kind, from_entity=from_entity }) - 1
+add_message :: proc(messages: ^[dynamic]Message, new_message: Message) -> ^Message {
+
+	for msg in messages {
+		#partial switch msg.kind {
+			case:
+			if msg.kind == new_message.kind {
+				return nil;
+			}
+		}
+	}
+
+	index := append(messages, new_message) - 1
 	return &messages[index]
 }
 
@@ -985,6 +1008,7 @@ sim_game_state :: proc(gs: ^Game_State, delta_t: f64, messages: []Message) {
 	for &en in gs.entities {
 		if en.kind == .player {
 			speed := 100.0
+			loggie(en.frame.input_axis)
 			en.pos += en.frame.input_axis * auto_cast (speed * delta_t)
 		}
 	}
@@ -1036,13 +1060,13 @@ draw_game_state :: proc(gs: Game_State, input_state: Input_State, messages_out: 
 	
 	if player_handle != 0 {	
 		if key_down(input_state, auto_cast 'A') {
-			add_message(messages_out, .move_left, player_handle)
+			add_message(messages_out, {kind=.move_left, from_entity=player_handle})
 		}
 		if key_down(input_state, auto_cast 'D') {
-			add_message(messages_out, .move_right, player_handle)
+			add_message(messages_out, {kind=.move_right, from_entity=player_handle})
 		}
 		if key_down(input_state, .SPACE) {
-			add_message(messages_out, .jump, player_handle)
+			add_message(messages_out, {kind=.jump, from_entity=player_handle})
 		}
 	}
 }
