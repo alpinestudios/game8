@@ -2,17 +2,21 @@
 
 player (entity stuff)
 input
+actual player entity render
+get player moving right
+physics
+tile
+collision
+smooth camera
 
 
 what next????
 
-actual player entity render
-get player moving right
+autostep
 
 
-physics
-tile
-collision
+
+
 wasm target + build proof of concept
 main menu
 inventory

@@ -28,6 +28,7 @@ app_state: struct {
 	game: Game_State,
 	message_queue: [dynamic]Message,
 	user_id: UserID,
+	camera_pos: Vector2,
 }
 
 UserID :: u64
@@ -61,8 +62,10 @@ init :: proc "c" () {
 		d3d11_shader_debugging = ODIN_DEBUG,
 	})
 	
+	// :init
 	init_images()
 	init_fonts()
+	first_time_init_game_state(&app_state.game)
 	
 	rand.reset(auto_cast runtime.read_cycle_counter())
 	app_state.user_id = rand.uint64()
@@ -168,7 +171,7 @@ frame :: proc "c" () {
 		accumulator -= sims_per_second
 	}
 	
-	memset(&draw_frame, 0, size_of(draw_frame)) // @speed, we probs don't want to reset this whole thing
+	draw_frame.reset = {}
 	
 	smooth_rendering := true
 	if smooth_rendering {
@@ -183,6 +186,11 @@ frame :: proc "c" () {
 	}
 	reset_input_state_for_next_frame(&app_state.input_state)
 	
+	for i in 0..<draw_frame.sucffed_deferred_quad_count {
+		draw_frame.quads[draw_frame.quad_count] = draw_frame.scuffed_deferred_quads[i]
+		draw_frame.quad_count += 1
+	}
+	
 	app_state.bind.images[IMG_tex0] = atlas.sg_image
 	app_state.bind.images[IMG_tex1] = images[font.img_id].sg_img
 	
@@ -196,6 +204,8 @@ frame :: proc "c" () {
 	sg.draw(0, 6*draw_frame.quad_count, 1)
 	sg.end_pass()
 	sg.commit()
+	
+	free_all(context.temp_allocator)
 }
 
 cleanup :: proc "c" () {
@@ -409,6 +419,7 @@ event :: proc "c" (event: ^sapp.Event) {
 // :UTILS
 
 DEFAULT_UV :: v4{0, 0, 1, 1}
+Vector2i :: [2]int
 Vector2 :: [2]f32
 Vector3 :: [3]f32
 Vector4 :: [4]f32
@@ -418,6 +429,7 @@ v4 :: Vector4
 Matrix4 :: linalg.Matrix4f32;
 
 COLOR_WHITE :: Vector4 {1,1,1,1}
+COLOR_RED :: Vector4 {1,0,0,1}
 
 // might do something with these later on
 loggie :: fmt.println // log is already used........
@@ -479,7 +491,7 @@ sine_breathe :: proc(p: $T) -> T where intrinsics.type_is_float(T) {
 //
 // API ordered highest -> lowest level
 
-draw_sprite :: proc(pos: Vector2, img_id: Image_Id, pivot:= Pivot.bottom_left, xform := Matrix4(1), color_override:= v4{0,0,0,0}) {
+draw_sprite :: proc(pos: Vector2, img_id: Image_Id, pivot:= Pivot.bottom_left, xform := Matrix4(1), color_override:= v4{0,0,0,0}, deferred:=false,) {
 	image := images[img_id]
 	size := v2{auto_cast image.width, auto_cast image.height}
 	
@@ -488,7 +500,7 @@ draw_sprite :: proc(pos: Vector2, img_id: Image_Id, pivot:= Pivot.bottom_left, x
 	xform0 *= xform // we slide in here because rotations + scales work nicely at this point
 	xform0 *= xform_translate(size * -scale_from_pivot(pivot))
 	
-	draw_rect_xform(xform0, size, img_id=img_id, color_override=color_override)
+	draw_rect_xform(xform0, size, img_id=img_id, color_override=color_override, deferred=deferred)
 }
 
 draw_rect_aabb :: proc(
@@ -498,9 +510,10 @@ draw_rect_aabb :: proc(
 	uv: Vector4=DEFAULT_UV,
 	img_id: Image_Id=.nil,
 	color_override:= v4{0,0,0,0},
+	deferred:=false,
 ) {
 	xform := linalg.matrix4_translate(v3{pos.x, pos.y, 0})
-	draw_rect_xform(xform, size, col, uv, img_id, color_override)
+	draw_rect_xform(xform, size, col, uv, img_id, color_override, deferred=deferred)
 }
 
 draw_rect_xform :: proc(
@@ -510,8 +523,9 @@ draw_rect_xform :: proc(
 	uv: Vector4=DEFAULT_UV,
 	img_id: Image_Id=.nil,
 	color_override:= v4{0,0,0,0},
+	deferred:=false,
 ) {
-	draw_rect_projected(draw_frame.projection * draw_frame.camera_xform * xform, size, col, uv, img_id, color_override)
+	draw_rect_projected(draw_frame.projection * draw_frame.camera_xform * xform, size, col, uv, img_id, color_override, deferred=deferred)
 }
 
 Vertex :: struct {
@@ -530,12 +544,15 @@ MAX_VERTS :: MAX_QUADS * 4
 
 Draw_Frame :: struct {
 
+	scuffed_deferred_quads: [MAX_QUADS/4]Quad,
 	quads: [MAX_QUADS]Quad,
-	quad_count: int,
-	
 	projection: Matrix4,
 	camera_xform: Matrix4,
-
+	
+	using reset: struct {
+		quad_count: int,
+		sucffed_deferred_quad_count: int,
+	}
 }
 draw_frame : Draw_Frame;
 
@@ -547,7 +564,8 @@ draw_rect_projected :: proc(
 	col: Vector4=COLOR_WHITE,
 	uv: Vector4=DEFAULT_UV,
 	img_id: Image_Id=.nil,
-	color_override:= v4{0,0,0,0}
+	color_override:= v4{0,0,0,0},
+	deferred:=false,
 ) {
 
 	bl := v2{ 0, 0 }
@@ -565,7 +583,7 @@ draw_rect_projected :: proc(
 		tex_index = 255 // bypasses texture sampling
 	}
 	
-	draw_quad_projected(world_to_clip, {bl, tl, tr, br}, {col, col, col, col}, {uv0.xy, uv0.xw, uv0.zw, uv0.zy}, {tex_index,tex_index,tex_index,tex_index}, {color_override,color_override,color_override,color_override})
+	draw_quad_projected(world_to_clip, {bl, tl, tr, br}, {col, col, col, col}, {uv0.xy, uv0.xw, uv0.zw, uv0.zy}, {tex_index,tex_index,tex_index,tex_index}, {color_override,color_override,color_override,color_override}, deferred=deferred)
 
 }
 
@@ -578,6 +596,7 @@ draw_quad_projected :: proc(
 	//flags:           [4]Quad_Flags,
 	color_overrides: [4]Vector4,
 	//hsv:             [4]Vector3
+	deferred:=false,
 ) {
 	using linalg
 
@@ -587,7 +606,15 @@ draw_quad_projected :: proc(
 	}
 		
 	verts := cast(^[4]Vertex)&draw_frame.quads[draw_frame.quad_count];
-	draw_frame.quad_count += 1;
+	if deferred {
+		// randy: me no like this, but it was needed for #debug_draw_on_sim so we could see what's
+		// happening.
+		verts = cast(^[4]Vertex)&draw_frame.scuffed_deferred_quads[draw_frame.sucffed_deferred_quad_count];
+		draw_frame.sucffed_deferred_quad_count += 1
+	} else {
+		draw_frame.quad_count += 1;
+	}
+	
 	
 	verts[0].pos = (world_to_clip * Vector4{positions[0].x, positions[0].y, 0.0, 1.0}).xy
 	verts[1].pos = (world_to_clip * Vector4{positions[1].x, positions[1].y, 0.0, 1.0}).xy
@@ -844,10 +871,122 @@ store_image :: proc(w: int, h: int, tex_index: u8, sg_img: sg.Image) -> Image_Id
 //
 // :GAME
 
+
+// :tile
+Tile :: struct {
+	type: u8,
+}
+
+// #volatile with the map image dimensions
+WORLD_W :: 128
+WORLD_H :: 80
+
+Tile_Pos :: [2]int
+
+get_tile :: proc(gs: Game_State, tile_pos: Tile_Pos) -> Tile {
+	local := world_tile_to_array_tile_pos(tile_pos)
+	return gs.tiles[local.x + local.y * WORLD_W]
+}
+
+get_tiles_in_box_radius :: proc(world_pos: Vector2, box_radius: Vector2i) -> []Tile_Pos {
+
+	tiles: [dynamic]Tile_Pos
+	tiles.allocator = context.temp_allocator
+	
+	tile_pos := world_pos_to_tile_pos(world_pos)
+	
+	for x := tile_pos.x - box_radius.x; x < tile_pos.x + box_radius.x; x += 1 {
+		for y := tile_pos.y - box_radius.y; y < tile_pos.y + box_radius.y; y += 1 {
+			append(&tiles, (Tile_Pos){x, y})
+		}
+	}
+	
+	return tiles[:]
+}
+
+// :tile load
+load_map_into_tiles :: proc(tiles: []Tile) {
+
+	png_data, succ := os.read_entire_file("res/map.png")
+	assert(succ, "map.png not found")
+
+	width, height, channels: i32
+	img_data :[^]byte= stbi.load_from_memory(raw_data(png_data), auto_cast len(png_data), &width, &height, &channels, 4)
+	
+	for x in 0..<WORLD_W {
+		for y in 0..<WORLD_H {
+		
+			index := (x + y * WORLD_W) * 4
+			pixel : []u8 = img_data[index:index+4]
+			
+			r := pixel[0]
+			g := pixel[1]
+			b := pixel[2]
+			a := pixel[3]
+			
+			t := &tiles[x + y * WORLD_W]
+			
+			if r == 255 {
+				t.type = 1
+			}
+		}
+	}
+
+}
+
+world_tile_to_array_tile_pos :: proc(world_tile: Tile_Pos) -> Vector2i {
+	x_index := world_tile.x + int(math.floor(f32(WORLD_W * 0.5)))
+	y_index := world_tile.y + int(math.floor(f32(WORLD_H * 0.5)))
+	return { x_index, y_index }
+}
+
+array_tile_pos_to_world_tile :: proc(x: int, y: int) -> Tile_Pos {
+	x_index := x - int(math.floor(f32(WORLD_W * 0.5)))
+	y_index := y - int(math.floor(f32(WORLD_H * 0.5)))
+	return (Tile_Pos){ x_index, y_index }
+}
+
+TILE_LENGTH :: 16
+
+tile_pos_to_world_pos :: proc(tile_pos: Tile_Pos) -> Vector2 {
+	return (Vector2){ auto_cast tile_pos.x * TILE_LENGTH, auto_cast tile_pos.y * TILE_LENGTH }
+}
+
+world_pos_to_tile_pos :: proc(world_pos: Vector2) -> Tile_Pos {
+	return (Tile_Pos){ auto_cast math.floor(world_pos.x / TILE_LENGTH), auto_cast math.floor(world_pos.y / TILE_LENGTH) }
+}
+
+// :tile
+draw_tiles :: proc(gs: Game_State, player: Entity) {
+
+	player_tile := world_pos_to_tile_pos(player.pos)
+	
+	tile_view_radius_x := 24
+	tile_view_radius_y := 20
+	
+	tiles := get_tiles_in_box_radius(player.pos, {24, 20})
+	for tile_pos in tiles {
+		tile_pos_world := tile_pos_to_world_pos(tile_pos)
+			
+		tile := get_tile(gs, tile_pos)
+		if tile.type != 0 {
+		
+			draw_rect_aabb(tile_pos_world, v2{TILE_LENGTH, TILE_LENGTH})
+		}
+	}
+}
+
+first_time_init_game_state :: proc(gs: ^Game_State) {
+	load_map_into_tiles(gs.tiles[:])
+}
+
+
 Game_State :: struct {
 	tick_index: u64,
 	entities: [128]Entity,
 	latest_entity_handle: Entity_Handle,
+	
+	tiles: [WORLD_W * WORLD_H]Tile,
 }
 
 Message_Kind :: enum {
@@ -900,6 +1039,8 @@ Entity :: struct {
 	kind: Entity_Kind,
 	flags: bit_set[Entity_Flags],
 	pos: Vector2,
+	vel: Vector2,
+	acc: Vector2,
 	user_id: UserID,
 	
 	frame: struct{
@@ -993,23 +1134,73 @@ sim_game_state :: proc(gs: ^Game_State, delta_t: f64, messages: []Message) {
 	}
 	
 	for msg in messages {
+		en := handle_to_entity(gs, msg.from_entity)
 		#partial switch msg.kind {
 			case .move_left: {
-				en := handle_to_entity(gs, msg.from_entity)
 				en.frame.input_axis.x += -1.0
 			}
 			case .move_right: {
-				en := handle_to_entity(gs, msg.from_entity)
 				en.frame.input_axis.x += 1.0
+			}
+			case .jump: {
+				en.vel.y = 300.0
 			}
 		}
 	}
 	
 	for &en in gs.entities {
+		// :player
 		if en.kind == .player {
-			speed := 100.0
-			loggie(en.frame.input_axis)
-			en.pos += en.frame.input_axis * auto_cast (speed * delta_t)
+			speed := 200.0
+			//loggie(en.frame.input_axis)
+			//en.pos += en.frame.input_axis * auto_cast (speed * delta_t)
+			en.vel.x = en.frame.input_axis.x * auto_cast (speed)
+		}
+	}
+	
+	for &en in gs.entities {
+		if .physics in en.flags {
+		
+			en.acc.y -= 980.0
+			
+			en.vel += en.acc * f32(delta_t)
+			next_pos := en.pos + en.vel * f32(delta_t)
+			en.acc = {}
+			
+			tiles := get_tiles_in_box_radius(next_pos, {4, 4})
+			for tile_pos in tiles {
+				
+				tile := get_tile(gs^, tile_pos)
+				if tile.type == 0 {
+					continue
+				}
+			
+				self_aabb := get_aabb_from_entity(en)
+				self_aabb = aabb_shift(self_aabb, next_pos)
+				against_aabb := aabb_make(tile_pos_to_world_pos(tile_pos), v2{TILE_LENGTH,TILE_LENGTH}, Pivot.bottom_left)
+				// #debug_draw_on_sim
+				//draw_rect_aabb(self_aabb.xy, (self_aabb.zw-self_aabb.xy), col=COLOR_RED, deferred=true)
+				//draw_rect_aabb(against_aabb.xy, (against_aabb.zw-against_aabb.xy), col=COLOR_RED, deferred=true)
+				
+				collide, depth := aabb_collide_aabb(self_aabb, against_aabb)
+				if collide {
+					next_pos += depth
+					
+					if math.abs(linalg.vector_dot(linalg.normalize(depth), v2{0, 1})) > 0.9 {
+						en.vel.y = 0
+					}
+				}
+				
+				
+			}
+			
+			en.pos = next_pos
+			
+			// if en.pos.y < 0 {
+			// 	en.pos.y = 0
+			// 	en.vel.y = 0
+			// }
+			
 		}
 	}
 }
@@ -1033,11 +1224,19 @@ draw_game_state :: proc(gs: Game_State, input_state: Input_State, messages_out: 
 	if player_handle == 0 {
 		append(messages_out, (Message){ kind=.create_player, create_player={ user_id=app_state.user_id } })
 	}
+	
 
 	draw_frame.projection = matrix_ortho3d_f32(window_w * -0.5, window_w * 0.5, window_h * -0.5, window_h * 0.5, -1, 1)
 	
-	draw_frame.camera_xform = Matrix4(1)
-	draw_frame.camera_xform *= xform_scale(2)
+	// :camera
+	{
+		animate_to_target_v2(&app_state.camera_pos, -player.pos, auto_cast sapp.frame_duration())
+		draw_frame.camera_xform = Matrix4(1)
+		draw_frame.camera_xform *= xform_scale(2)
+		draw_frame.camera_xform *= xform_translate(app_state.camera_pos)
+	}
+	
+	draw_tiles(gs, player)
 	
 	// draw_sprite(v2{}, .player, pivot=.bottom_center)
 	
@@ -1046,13 +1245,16 @@ draw_game_state :: proc(gs: Game_State, input_state: Input_State, messages_out: 
 	xform *= xform_scale(1.0 + 1 * sine_breathe(alpha))
 	draw_sprite(v2{-50, 50}, .crawler, xform=xform, pivot=.center_center)
 	
-	draw_text(v2{50, 0}, "sugon", scale=4.0)
+	draw_text(v2{50, 80}, "sugon", scale=4.0)
 	
 	for en in gs.entities {
 		#partial switch en.kind {
 			case .player: draw_player(en)
 		}
 	}
+	
+	//self_aabb := get_aabb_from_entity(player)
+	//draw_rect_aabb(self_aabb.xy, (self_aabb.zw-self_aabb.xy), col=COLOR_RED)
 	
 	// :input example
 	// we want to do the input here, because we'll need context on things like UI rects that
@@ -1065,7 +1267,7 @@ draw_game_state :: proc(gs: Game_State, input_state: Input_State, messages_out: 
 		if key_down(input_state, auto_cast 'D') {
 			add_message(messages_out, {kind=.move_right, from_entity=player_handle})
 		}
-		if key_down(input_state, .SPACE) {
+		if key_just_pressed(input_state, .SPACE) {
 			add_message(messages_out, {kind=.jump, from_entity=player_handle})
 		}
 	}
@@ -1080,4 +1282,99 @@ draw_player :: proc(en: Entity) {
 	
 	draw_sprite(en.pos, img, pivot=.bottom_center, xform=xform)
 
+}
+
+//
+// :COLLISION STUFF
+//
+
+AABB :: Vector4
+get_aabb_from_entity :: proc(en: Entity) -> AABB {
+
+	#partial switch en.kind {
+		case .player: {
+			return aabb_make(v2{16, 32}, .bottom_center)
+		}
+	}
+
+	return {}
+}
+
+aabb_collide_aabb :: proc(a: AABB, b: AABB) -> (bool, Vector2) {
+	// Calculate overlap on each axis
+	dx := (a.z + a.x) / 2 - (b.z + b.x) / 2;
+	dy := (a.w + a.y) / 2 - (b.w + b.y) / 2;
+
+	overlap_x := (a.z - a.x) / 2 + (b.z - b.x) / 2 - abs(dx);
+	overlap_y := (a.w - a.y) / 2 + (b.w - b.y) / 2 - abs(dy);
+
+	// If there is no overlap on any axis, there is no collision
+	if overlap_x <= 0 || overlap_y <= 0 {
+		return false, Vector2{};
+	}
+
+	// Find the penetration vector
+	penetration := Vector2{};
+	if overlap_x < overlap_y {
+		penetration.x = overlap_x if dx > 0 else -overlap_x;
+	} else {
+		penetration.y = overlap_y if dy > 0 else -overlap_y;
+	}
+
+	return true, penetration;
+}
+
+aabb_get_center :: proc(a: Vector4) -> Vector2 {
+	min := a.xy;
+	max := a.zw;
+	return { min.x + 0.5 * (max.x-min.x), min.y + 0.5 * (max.y-min.y) };
+}
+
+// aabb_make :: proc(pos_x: float, pos_y: float, size_x: float, size_y: float) -> Vector4 {
+// 	return {pos_x, pos_y, pos_x + size_x, pos_y + size_y};
+// }
+aabb_make_with_pos :: proc(pos: Vector2, size: Vector2, pivot: Pivot) -> Vector4 {
+	aabb := (Vector4){0,0,size.x,size.y};
+	aabb = aabb_shift(aabb, pos - scale_from_pivot(pivot) * size);
+	return aabb;
+}
+aabb_make_with_size :: proc(size: Vector2, pivot: Pivot) -> Vector4 {
+	return aabb_make({}, size, pivot);
+}
+
+aabb_make :: proc{
+	aabb_make_with_pos,
+	aabb_make_with_size
+}
+
+aabb_shift :: proc(aabb: Vector4, amount: Vector2) -> Vector4 {
+	return {aabb.x + amount.x, aabb.y + amount.y, aabb.z + amount.x, aabb.w + amount.y};
+}
+
+aabb_contains :: proc(aabb: Vector4, p: Vector2) -> bool {
+	return (p.x >= aabb.x) && (p.x <= aabb.z) &&
+           (p.y >= aabb.y) && (p.y <= aabb.w);
+}
+
+
+animate_to_target_f32 :: proc(value: ^f32, target: f32, delta_t: f32, rate:f32= 15.0, good_enough:f32= 0.001) -> bool
+{
+	value^ += (target - value^) * (1.0 - math.pow_f32(2.0, -rate * delta_t));
+	if almost_equals(value^, target, good_enough)
+	{
+		value^ = target;
+		return true; // reached
+	}
+	return false;
+}
+
+animate_to_target_v2 :: proc(value: ^Vector2, target: Vector2, delta_t: f32, rate :f32= 15.0)
+{
+	value.x += (target.x - value.x) * (1.0 - math.pow_f32(2.0, -rate * delta_t));
+	value.y += (target.y - value.y) * (1.0 - math.pow_f32(2.0, -rate * delta_t));
+}
+
+almost_equals :: proc(a: f32, b: f32, epsilon: f32 = 0.001) -> bool
+{
+	return abs(a - b) <= epsilon;
 }
