@@ -875,6 +875,7 @@ store_image :: proc(w: int, h: int, tex_index: u8, sg_img: sg.Image) -> Image_Id
 // :tile
 Tile :: struct {
 	type: u8,
+	debug_tile:bool,
 }
 
 // #volatile with the map image dimensions
@@ -886,6 +887,10 @@ Tile_Pos :: [2]int
 get_tile :: proc(gs: Game_State, tile_pos: Tile_Pos) -> Tile {
 	local := world_tile_to_array_tile_pos(tile_pos)
 	return gs.tiles[local.x + local.y * WORLD_W]
+}
+get_tile_pointer :: proc(gs: ^Game_State, tile_pos: Tile_Pos) -> ^Tile {
+	local := world_tile_to_array_tile_pos(tile_pos)
+	return &gs.tiles[local.x + local.y * WORLD_W]
 }
 
 get_tiles_in_box_radius :: proc(world_pos: Vector2, box_radius: Vector2i) -> []Tile_Pos {
@@ -970,8 +975,11 @@ draw_tiles :: proc(gs: Game_State, player: Entity) {
 			
 		tile := get_tile(gs, tile_pos)
 		if tile.type != 0 {
-		
-			draw_rect_aabb(tile_pos_world, v2{TILE_LENGTH, TILE_LENGTH})
+			col := COLOR_WHITE
+			if tile.debug_tile {
+				col = COLOR_RED
+			}
+			draw_rect_aabb(tile_pos_world, v2{TILE_LENGTH, TILE_LENGTH}, col=col)
 		}
 	}
 }
@@ -1158,6 +1166,7 @@ sim_game_state :: proc(gs: ^Game_State, delta_t: f64, messages: []Message) {
 		}
 	}
 	
+	// :physics
 	for &en in gs.entities {
 		if .physics in en.flags {
 		
@@ -1195,6 +1204,22 @@ sim_game_state :: proc(gs: ^Game_State, delta_t: f64, messages: []Message) {
 			}
 			
 			en.pos = next_pos
+			
+			// auto step
+			if en.vel.x != 0 {
+			
+				wall_sample_pos := en.pos + v2{0, TILE_LENGTH * 0.5} + linalg.normalize(en.vel) * 10
+				tile_pos := world_pos_to_tile_pos(wall_sample_pos)
+				
+				tile_next := get_tile_pointer(gs, tile_pos)
+				//tile_next.debug_tile = true
+				tile_up := get_tile_pointer(gs, tile_pos + {0, 1})
+				//tile_up.debug_tile = true
+				
+				if tile_next.type != 0 && tile_up.type == 0 {
+					en.pos.y += TILE_LENGTH
+				}
+			}
 			
 			// if en.pos.y < 0 {
 			// 	en.pos.y = 0
