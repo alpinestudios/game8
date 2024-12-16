@@ -10,6 +10,7 @@ import "core:math/linalg"
 import "core:math/ease"
 import "core:math/rand"
 import "core:mem"
+import "core:slice"
 
 import sapp "../sokol/app"
 import sg "../sokol/gfx"
@@ -728,9 +729,9 @@ pack_images_into_atlas :: proc() {
 	}
 	
 	// allocate big atlas
-	raw_data, err := mem.alloc(atlas.w * atlas.h * 4)
-	defer mem.free(raw_data)
-	mem.set(raw_data, 255, atlas.w*atlas.h*4)
+	buf := make([]u8, atlas.w * atlas.h * 4)
+	defer delete(buf)
+	slice.fill(buf, 255)
 	
 	// copy rect row-by-row into destination atlas
 	for rect in rects {
@@ -738,9 +739,9 @@ pack_images_into_atlas :: proc() {
 		
 		// copy row by row into atlas
 		for row in 0..<rect.h {
-			src_row := mem.ptr_offset(&img.data[0], row * rect.w * 4)
-			dest_row := mem.ptr_offset(cast(^u8)raw_data, ((rect.y + row) * auto_cast atlas.w + rect.x) * 4)
-			mem.copy(dest_row, src_row, auto_cast rect.w * 4)
+			src := img.data[row * rect.w * 4:][: rect.w * 4]
+			dst := buf[((rect.y + row) * stbrp.Coord(atlas.w) + rect.x) * 4:]
+			copy(dst, src)
 		}
 		
 		// yeet old data
@@ -756,14 +757,14 @@ pack_images_into_atlas :: proc() {
 		img.atlas_uvs.w = img.atlas_uvs.y + cast(f32)img.height / cast(f32)atlas.h
 	}
 	
-	stbi.write_png("atlas.png", auto_cast atlas.w, auto_cast atlas.h, 4, raw_data, 4 * auto_cast atlas.w)
+	stbi.write_png("atlas.png", auto_cast atlas.w, auto_cast atlas.h, 4, raw_data(buf), 4 * auto_cast atlas.w)
 	
 	// setup image for GPU
 	desc : sg.Image_Desc
 	desc.width = auto_cast atlas.w
 	desc.height = auto_cast atlas.h
 	desc.pixel_format = .RGBA8
-	desc.data.subimage[0][0] = {ptr=raw_data, size=auto_cast (atlas.w*atlas.h*4)}
+	desc.data.subimage[0][0] = {ptr=raw_data(buf), size=auto_cast (atlas.w*atlas.h*4)}
 	atlas.sg_image = sg.make_image(desc)
 	if atlas.sg_image.id == sg.INVALID_ID {
 		log_error("failed to make image")
@@ -825,13 +826,13 @@ font: Font
 init_fonts :: proc() {
 	using stbtt
 	
-	bitmap, _ := mem.alloc(font_bitmap_w * font_bitmap_h)
+	bitmap := make([^]u8, font_bitmap_w * font_bitmap_h)
 	font_height := 15 // for some reason this only bakes properly at 15 ? it's a 16px font dou...
 	path := "res/fonts/alagard.ttf"
 	ttf_data, err := os.read_entire_file(path)
 	assert(ttf_data != nil, "failed to read font")
 	
-	ret := BakeFontBitmap(raw_data(ttf_data), 0, auto_cast font_height, auto_cast bitmap, font_bitmap_w, font_bitmap_h, 32, char_count, &font.char_data[0])
+	ret := BakeFontBitmap(raw_data(ttf_data), 0, auto_cast font_height, bitmap, font_bitmap_w, font_bitmap_h, 32, char_count, &font.char_data[0])
 	assert(ret > 0, "not enough space in bitmap")
 	
 	stbi.write_png("font.png", auto_cast font_bitmap_w, auto_cast font_bitmap_h, 1, bitmap, auto_cast font_bitmap_w)
@@ -1369,7 +1370,7 @@ aabb_make_with_size :: proc(size: Vector2, pivot: Pivot) -> Vector4 {
 
 aabb_make :: proc{
 	aabb_make_with_pos,
-	aabb_make_with_size
+	aabb_make_with_size,
 }
 
 aabb_shift :: proc(aabb: Vector4, amount: Vector2) -> Vector4 {
